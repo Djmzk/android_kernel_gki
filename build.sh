@@ -1,161 +1,51 @@
+export CLANG_PATH=$HOME_DIR/tc/clang-r487747c/bin
+export PATH=${BINUTILS_PATH}:${CLANG_PATH}:${PATH}
+make -j8 CC='ccache clang' ARCH=arm64 LLVM=1 LLVM_IAS=1 O=out gki_defconfig
 #!/bin/bash
-# Afaneh menu V2.0
+# Resources
+THREAD="-j$(nproc --all)"
 
-# Variables
-DIR=`readlink -f .`
-PARENT_DIR=`readlink -f ${DIR}/..`
+export CLANG_PATH=$HOME_DIR/tc/clang-r487747c/bin/
+export PATH=${CLANG_PATH}:${PATH}
+export CLANG_TRIPLE=aarch64-linux-gnu-
+export CROSS_COMPILE=$HOME_DIR/tc/clang-r487747c/bin/aarch64-linux-gnu- CC=clang CXX=clang++
 
-export CROSS_COMPILE=$PARENT_DIR/tc/zyc-19/bin/aarch64-linux-gnu-
-export CC=$PARENT_DIR/tc/zyc-19/bin/clang
-export PLATFORM_VERSION=14
-export ANDROID_MAJOR_VERSION=s
-export PATH=$PARENT_DIR/tc/zyc-19/bin:$PATH
-export PATH=$PARENT_DIR/tc/build-tools/path/linux-x86:$PATH
-export PATH=$PARENT_DIR/tc/gas/linux-x86:$PATH
-export TARGET_SOC=s5e9925
-export LLVM=1 LLVM_IAS=1
+DEFCONFIG="gki_defconfig"
+
+# Paths
+KERNEL_DIR=`pwd`
+ZIMAGE_DIR="$KERNEL_DIR/out/arch/arm64/boot"
+
+# Vars
 export ARCH=arm64
-KERNEL_MAKE_ENV="LOCALVERSION=-MoonStone"
+export SUBARCH=$ARCH
+export KBUILD_BUILD_USER=saikiran
 
-# Color
-ON_BLUE=`echo -e "\033[44m"`	# On Blue
-RED=`echo -e "\033[1;31m"`	# Red
-BLUE=`echo -e "\033[1;34m"`	# Blue
-GREEN=`echo -e "\033[1;32m"`	# Green
-Under_Line=`echo -e "\e[4m"`	# Text Under Line
-STD=`echo -e "\033[0m"`		# Text Clear
- 
-# Functions
-pause(){
-  read -p "${RED}$2${STD}Press ${BLUE}[Enter]${STD} key to $1..." fackEnterKey
-}
+DATE_START=$(date +"%s")
 
-clang(){
-  if [ ! -d $PARENT_DIR/tc/clang-r487747c ]; then
-    pause 'clone Android Clang/LLVM Prebuilts'
-    git clone https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r487747c $PARENT_DIR/tc/clang-r487747c
-    . $DIR/build_menu
-  fi
-}
+echo  "DEFCONFIG SET TO $DEFCONFIG"
+echo "-------------------"
+echo "Making Kernel:"
+echo "-------------------"
+echo
 
-gas(){
-  if [ ! -d $PARENT_DIR/tc/gas/linux-x86 ]; then
-    pause 'clone prebuilt binaries of GNU `as` (the assembler)'
-    git clone https://android.googlesource.com/platform/prebuilts/gas/linux-x86 $PARENT_DIR/tc/gas/linux-x86
-    . $DIR/build_menu
-  fi
-}
+make CC="ccache clang" CXX="ccache clang++" LLVM=1 LLVM_IAS=1 O=out $DEFCONFIG
+make CC='ccache clang' CXX="ccache clang++" LLVM=1 LLVM_IAS=1 O=out $THREAD 2>&1 | tee kernel.log
 
-build_tools(){
-  if [ ! -d $PARENT_DIR/tc/build-tools ]; then
-    pause 'clone prebuilt binaries of build tools'
-    git clone https://android.googlesource.com/platform/prebuilts/build-tools $PARENT_DIR/tc/build-tools
-    . $DIR/build_menu
-  fi
-}
+echo
+echo "-------------------"
+echo "Build Completed in:"
+echo "-------------------"
+echo
 
-variant(){
-  findconfig=""
-  findconfig=($(ls arch/arm64/configs/gki_defconfig))
-  declare -i i=1
-  shift 2
-  for e in "${findconfig[@]}"; do
-    echo "$i) $(basename $e | cut -d'_' -f2)"
-    i=i+1
-  done
-  echo ""
-  read -p "Select variant: " REPLY
-  i="$REPLY"
-  if [[ $i -gt 0 && $i -le ${#findconfig[@]} ]]; then
-    export v="${findconfig[$i-1]}"
-    export VARIANT=$(basename $v | cut -d'_' -f2)
-    echo ${VARIANT} selected
-    pause 'continue'
-  else
-    pause 'return to Main menu' 'Invalid option, '
-    . $DIR/build_menu
-  fi
-}
+DATE_END=$(date +"%s")
+DIFF=$(($DATE_END - $DATE_START))
+echo "Time: $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) seconds."
+echo
+ls -a $ZIMAGE_DIR
 
-clean(){
-  echo "${GREEN}***** Cleaning in Progress *****${STD}"
-  make clean
-  make mrproper
-  [ -d "out" ] && rm -rf out
-  echo "${GREEN}***** Cleaning Done *****${STD}"
-  pause 'continue'
-}
+cd $KERNEL_DIR
 
-build_kernel(){
-  variant
-  echo "${GREEN}***** Compiling kernel *****${STD}"
-  [ ! -d "out" ] && mkdir out
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV gki_defconfig
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV
-
-  [ -e arch/arm64/boot/Image.gz ] && cp arch/arm64/boot/Image.gz $(pwd)/out/Image.gz
-  if [ -e arch/arm64/boot/Image ]; then
-    cp arch/arm64/boot/Image $(pwd)/out/Image
-
-    echo "${GREEN}***** Ready to Roar *****${STD}"
-    pause 'continue'
-  else
-    pause 'return to Main menu' 'Kernel STUCK in BUILD!, '
-  fi
-}
-
-anykernel3(){
-  if [ ! -d $PARENT_DIR/AnyKernel3 ]; then
-    pause 'clone AnyKernel3 - Flashable Zip Template'
-    git clone https://github.com/osm0sis/AnyKernel3 $PARENT_DIR/AnyKernel3
-  fi
-  variant
-  if [ -e $DIR/arch/arm64/boot/Image ]; then
-    cd $PARENT_DIR/AnyKernel3
-    git reset --hard
-    cp $DIR/arch/arm64/boot/Image zImage
-    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by saikiran/g" anykernel.sh
-    zip -r9 $PARENT_DIR/${VARIANT}_kernel_`date '+%Y_%m_%d'`.zip * -x .git README.md *placeholder
-    cd $DIR
-    pause 'continue'
-  else
-    pause 'return to Main menu' 'Build kernel first, '
-  fi
-}
-
-# Run once
-clang
-gas
-build_tools
-
-# Show menu
-show_menus(){
-  clear
-  echo "${ON_BLUE} B U I L D - M E N U ${STD}"
-  echo "1. ${Under_Line}B${STD}uild kernel"
-  echo "2. ${Under_Line}C${STD}lean"
-  echo "3. Make ${Under_Line}f${STD}lashable zip"
-  echo "4. E${Under_Line}x${STD}it"
-}
-
-# Read input
-read_options(){
-  local choice
-  read -p "Enter choice [ 1 - 4] " choice
-  case $choice in
-    1|b|B) build_kernel ;;
-    2|c|C) clean ;;
-    3|f|F) anykernel3;;
-    4|x|X) exit 0;;
-    *) pause 'return to Main menu' 'Invalid option, '
-  esac
-}
-
-# Trap CTRL+C, CTRL+Z and quit singles
- 
-# Step # Main logic - infinite loop
-while true
-do
-  show_menus
-  read_options
-done
+TIME="$(date "+%Y%m%d-%H%M%S")"
+mkdir -p tmp
+cp -fp $ZIMAGE_DIR/Image.gz tmp
