@@ -15,7 +15,7 @@ export PATH=$PARENT_DIR/tc/gas/linux-x86:$PATH
 export TARGET_SOC=s5e9925
 export LLVM=1 LLVM_IAS=1
 export ARCH=arm64
-KERNEL_MAKE_ENV="LOCALVERSION=-MoonStone"
+KERNEL_MAKE_ENV="LOCALVERSION=-MoonStone-v1.0"
 
 # Color
 ON_BLUE=$(echo -e "\033[44m")    # On Blue
@@ -113,11 +113,11 @@ anykernel3(){
     git clone https://github.com/osm0sis/AnyKernel3 $PARENT_DIR/AnyKernel3
   fi
   variant
-  if [ -e $DIR/arch/arm64/boot/Image ]; then
+  if [ -e $DIR/out]; then
     cd $PARENT_DIR/AnyKernel3
     git reset --hard
-    cp $DIR/arch/arm64/boot/Image zImage
-    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by saikiran/g" anykernel.sh
+    cp $DIR/out/image.gz
+    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by djmzk/g" anykernel.sh
     zip -r9 $PARENT_DIR/${VARIANT}_kernel_`date '+%Y_%m_%d'`.zip * -x .git README.md *placeholder
     cd $DIR
     pause 'continue'
