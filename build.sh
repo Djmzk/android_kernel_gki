@@ -113,11 +113,11 @@ anykernel3(){
     git clone https://github.com/osm0sis/AnyKernel3 $PARENT_DIR/AnyKernel3
   fi
   variant
-  if [ -e $DIR/out]; then
+  if [ -e $DIR/arch/arm64/boot/Image ]; then
     cd $PARENT_DIR/AnyKernel3
     git reset --hard
-    cp $DIR/out/image.gz
-    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by djmzk/g" anykernel.sh
+    cp $DIR/arch/arm64/boot/Image zImage
+    sed -i "s/ExampleKernel by osm0sis/${VARIANT} kernel by saikiran/g" anykernel.sh
     zip -r9 $PARENT_DIR/${VARIANT}_kernel_`date '+%Y_%m_%d'`.zip * -x .git README.md *placeholder
     cd $DIR
     pause 'continue'
