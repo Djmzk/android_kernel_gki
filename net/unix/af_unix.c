@@ -1126,11 +1126,13 @@ static void unix_state_double_lock(struct sock *sk1, struct sock *sk2)
 		unix_state_lock(sk1);
 		return;
 	}
-	if (sk1 > sk2)
-		swap(sk1, sk2);
-
-	unix_state_lock(sk1);
-	unix_state_lock_nested(sk2, U_LOCK_SECOND);
+	if (sk1 < sk2) {
+		unix_state_lock(sk1);
+		unix_state_lock_nested(sk2);
+	} else {
+		unix_state_lock(sk2);
+		unix_state_lock_nested(sk1);
+	}
 }
 
 static void unix_state_double_unlock(struct sock *sk1, struct sock *sk2)
@@ -1350,7 +1352,7 @@ restart:
 		goto out_unlock;
 	}
 
-	unix_state_lock_nested(sk, U_LOCK_SECOND);
+	unix_state_lock_nested(sk);
 
 	if (sk->sk_state != st) {
 		unix_state_unlock(sk);
@@ -3009,4 +3011,5 @@ fs_initcall(af_unix_init);
 module_exit(af_unix_exit);
 
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_ALIAS_NETPROTO(PF_UNIX);

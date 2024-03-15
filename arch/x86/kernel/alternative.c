@@ -676,7 +676,6 @@ void __init_or_module noinline apply_retpolines(s32 *start, s32 *end)
 }
 
 #ifdef CONFIG_RETHUNK
-
 /*
  * Rewrite the compiler generated return thunk tail-calls.
  *
@@ -692,18 +691,14 @@ static int patch_return(void *addr, struct insn *insn, u8 *bytes)
 {
 	int i = 0;
 
-	if (cpu_feature_enabled(X86_FEATURE_RETHUNK)) {
-		if (x86_return_thunk == __x86_return_thunk)
-			return -1;
+	if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
+		return -1;
 
-		i = JMP32_INSN_SIZE;
-		__text_gen_insn(bytes, JMP32_INSN_OPCODE, addr, x86_return_thunk, i);
-	} else {
-		bytes[i++] = RET_INSN_OPCODE;
-	}
+	bytes[i++] = RET_INSN_OPCODE;
 
 	for (; i < insn->length;)
 		bytes[i++] = INT3_INSN_OPCODE;
+
 	return i;
 }
 
@@ -944,23 +939,10 @@ extern struct paravirt_patch_site __start_parainstructions[],
  *
  * See entry_{32,64}.S for more details.
  */
-
-/*
- * We define the int3_magic() function in assembly to control the calling
- * convention such that we can 'call' it from assembly.
- */
-
-extern void int3_magic(unsigned int *ptr); /* defined in asm */
-
-asm (
-"	.pushsection	.init.text, \"ax\", @progbits\n"
-"	.type		int3_magic, @function\n"
-"int3_magic:\n"
-"	movl	$1, (%" _ASM_ARG1 ")\n"
-	ASM_RET
-"	.size		int3_magic, .-int3_magic\n"
-"	.popsection\n"
-);
+static void __init __no_sanitize_address notrace int3_magic(unsigned int *ptr)
+{
+	*ptr = 1;
+}
 
 extern __initdata unsigned long int3_selftest_ip; /* defined in asm below */
 
@@ -1098,8 +1080,8 @@ void __init_or_module text_poke_early(void *addr, const void *opcode,
 	} else {
 		local_irq_save(flags);
 		memcpy(addr, opcode, len);
-		sync_core();
 		local_irq_restore(flags);
+		sync_core();
 
 		/*
 		 * Could also do a CLFLUSH here to speed up CPU recovery; but

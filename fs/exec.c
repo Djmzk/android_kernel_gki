@@ -74,6 +74,8 @@
 
 #include <trace/events/sched.h>
 
+EXPORT_TRACEPOINT_SYMBOL_GPL(task_rename);
+
 static int bprm_creds_from_file(struct linux_binprm *bprm);
 
 int suid_dumpable = 0;
@@ -232,7 +234,7 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 
 static void put_arg_page(struct page *page)
 {
-	put_page(page);
+	put_user_page(page);
 }
 
 static void free_arg_pages(struct linux_binprm *bprm)
@@ -1392,9 +1394,6 @@ int begin_new_exec(struct linux_binprm * bprm)
 
 out_unlock:
 	up_write(&me->signal->exec_update_lock);
-	if (!bprm->cred)
-		mutex_unlock(&me->signal->cred_guard_mutex);
-
 out:
 	return retval;
 }

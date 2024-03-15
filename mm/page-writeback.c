@@ -42,6 +42,9 @@
 
 #include "internal.h"
 
+#undef CREATE_TRACE_POINT
+#include <trace/hooks/mm.h>
+
 /*
  * Sleep at most 200ms at a time in balance_dirty_pages().
  */
@@ -1524,7 +1527,7 @@ static inline void wb_dirty_limits(struct dirty_throttle_control *dtc)
 	 */
 	dtc->wb_thresh = __wb_calc_thresh(dtc);
 	dtc->wb_bg_thresh = dtc->thresh ?
-		div64_u64(dtc->wb_thresh * dtc->bg_thresh, dtc->thresh) : 0;
+		div_u64((u64)dtc->wb_thresh * dtc->bg_thresh, dtc->thresh) : 0;
 
 	/*
 	 * In order to avoid the stacked BDI deadlock we need
@@ -1624,6 +1627,9 @@ static void balance_dirty_pages(struct bdi_writeback *wb,
 				m_bg_thresh = mdtc->bg_thresh;
 			}
 		}
+
+		trace_android_vh_mm_dirty_limits(gdtc, strictlimit, dirty, bg_thresh,
+				nr_reclaimable, pages_dirtied);
 
 		/*
 		 * Throttle it only when the background writeback cannot

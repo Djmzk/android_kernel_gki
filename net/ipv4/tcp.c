@@ -280,8 +280,10 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
-DEFINE_PER_CPU(unsigned int, tcp_orphan_count);
-EXPORT_PER_CPU_SYMBOL_GPL(tcp_orphan_count);
+#include <trace/hooks/ipv4.h>
+
+struct percpu_counter tcp_orphan_count;
+EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
 long sysctl_tcp_mem[3] __read_mostly;
 EXPORT_SYMBOL(sysctl_tcp_mem);
@@ -726,7 +728,6 @@ void tcp_push(struct sock *sk, int flags, int mss_now,
 		if (!test_bit(TSQ_THROTTLED, &sk->sk_tsq_flags)) {
 			NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPAUTOCORKING);
 			set_bit(TSQ_THROTTLED, &sk->sk_tsq_flags);
-			smp_mb__after_atomic();
 		}
 		/* It is possible TX completion already happened
 		 * before we set TSQ_THROTTLED.
@@ -1203,6 +1204,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	bool zc = false;
 	long timeo;
 
+	trace_android_rvh_tcp_sendmsg_locked(sk, size);
 	flags = msg->msg_flags;
 
 	if (flags & MSG_ZEROCOPY && size && sock_flag(sk, SOCK_ZEROCOPY)) {
@@ -1778,36 +1780,6 @@ static skb_frag_t *skb_advance_to_frag(struct sk_buff *skb, u32 offset_skb,
 	return frag;
 }
 
-static bool can_map_frag(const skb_frag_t *frag)
-{
-	struct page *page;
-
-	if (skb_frag_size(frag) != PAGE_SIZE || skb_frag_off(frag))
-		return false;
-
-	page = skb_frag_page(frag);
-
-	if (PageCompound(page) || page->mapping)
-		return false;
-
-	return true;
-}
-
-static int find_next_mappable_frag(const skb_frag_t *frag,
-				   int remaining_in_skb)
-{
-	int offset = 0;
-
-	if (likely(can_map_frag(frag)))
-		return 0;
-
-	while (offset < remaining_in_skb && !can_map_frag(frag)) {
-		offset += skb_frag_size(frag);
-		++frag;
-	}
-	return offset;
-}
-
 static int tcp_copy_straggler_data(struct tcp_zerocopy_receive *zc,
 				   struct sk_buff *skb, u32 copylen,
 				   u32 *offset, u32 *seq)
@@ -1933,8 +1905,6 @@ static int tcp_zerocopy_receive(struct sock *sk,
 	ret = 0;
 	curr_addr = address;
 	while (length + PAGE_SIZE <= zc->length) {
-		int mappable_offset;
-
 		if (zc->recv_skip_hint < PAGE_SIZE) {
 			u32 offset_frag;
 
@@ -1962,11 +1932,15 @@ static int tcp_zerocopy_receive(struct sock *sk,
 			if (!frags || offset_frag)
 				break;
 		}
+		if (skb_frag_size(frags) != PAGE_SIZE || skb_frag_off(frags)) {
+			int remaining = zc->recv_skip_hint;
 
-		mappable_offset = find_next_mappable_frag(frags,
-							  zc->recv_skip_hint);
-		if (mappable_offset) {
-			zc->recv_skip_hint = mappable_offset;
+			while (remaining && (skb_frag_size(frags) != PAGE_SIZE ||
+					     skb_frag_off(frags))) {
+				remaining -= skb_frag_size(frags);
+				frags++;
+			}
+			zc->recv_skip_hint -= remaining;
 			break;
 		}
 		pages[pg_idx] = skb_frag_page(frags);
@@ -2141,6 +2115,7 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return inet_recv_error(sk, msg, len, addr_len);
+	trace_android_rvh_tcp_recvmsg(sk);
 
 	if (sk_can_busy_loop(sk) && skb_queue_empty_lockless(&sk->sk_receive_queue) &&
 	    (sk->sk_state == TCP_ESTABLISHED))
@@ -2353,6 +2328,7 @@ found_fin_ok:
 		break;
 	} while (len > 0);
 
+	trace_android_rvh_tcp_recvmsg_stat(sk, copied);
 	/* According to UNIX98, msg_name/msg_namelen are ignored
 	 * on connected socket. I was just happy when found this 8) --ANK
 	 */
@@ -2501,37 +2477,11 @@ void tcp_shutdown(struct sock *sk, int how)
 }
 EXPORT_SYMBOL(tcp_shutdown);
 
-int tcp_orphan_count_sum(void)
-{
-	int i, total = 0;
-
-	for_each_possible_cpu(i)
-		total += per_cpu(tcp_orphan_count, i);
-
-	return max(total, 0);
-}
-
-static int tcp_orphan_cache;
-static struct timer_list tcp_orphan_timer;
-#define TCP_ORPHAN_TIMER_PERIOD msecs_to_jiffies(100)
-
-static void tcp_orphan_update(struct timer_list *unused)
-{
-	WRITE_ONCE(tcp_orphan_cache, tcp_orphan_count_sum());
-	mod_timer(&tcp_orphan_timer, jiffies + TCP_ORPHAN_TIMER_PERIOD);
-}
-
-static bool tcp_too_many_orphans(int shift)
-{
-	return READ_ONCE(tcp_orphan_cache) << shift >
-		READ_ONCE(sysctl_tcp_max_orphans);
-}
-
 bool tcp_check_oom(struct sock *sk, int shift)
 {
 	bool too_many_orphans, out_of_socket_memory;
 
-	too_many_orphans = tcp_too_many_orphans(shift);
+	too_many_orphans = tcp_too_many_orphans(sk, shift);
 	out_of_socket_memory = tcp_out_of_memory(sk);
 
 	if (too_many_orphans)
@@ -2640,7 +2590,7 @@ adjudge_to_death:
 	/* remove backlog if any, without releasing ownership. */
 	__release_sock(sk);
 
-	this_cpu_inc(tcp_orphan_count);
+	percpu_counter_inc(sk->sk_prot->orphan_count);
 
 	/* Have we already been destroyed by a softirq or backlog? */
 	if (state != TCP_CLOSE && sk->sk_state == TCP_CLOSE)
@@ -2776,12 +2726,6 @@ int tcp_disconnect(struct sock *sk, int flags)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int old_state = sk->sk_state;
 	u32 seq;
-
-	/* Deny disconnect if other threads are blocked in sk_wait_event()
-	 * or inet_wait_for_connect().
-	 */
-	if (sk->sk_wait_pending)
-		return -EBUSY;
 
 	if (old_state != TCP_CLOSE)
 		tcp_set_state(sk, TCP_CLOSE);
@@ -3101,7 +3045,7 @@ int tcp_sock_set_syncnt(struct sock *sk, int val)
 		return -EINVAL;
 
 	lock_sock(sk);
-	WRITE_ONCE(inet_csk(sk)->icsk_syn_retries, val);
+	inet_csk(sk)->icsk_syn_retries = val;
 	release_sock(sk);
 	return 0;
 }
@@ -3366,7 +3310,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level, int optname,
 		if (val < 1 || val > MAX_TCP_SYNCNT)
 			err = -EINVAL;
 		else
-			WRITE_ONCE(icsk->icsk_syn_retries, val);
+			icsk->icsk_syn_retries = val;
 		break;
 
 	case TCP_SAVE_SYN:
@@ -3772,8 +3716,7 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 		val = keepalive_probes(tp);
 		break;
 	case TCP_SYNCNT:
-		val = READ_ONCE(icsk->icsk_syn_retries) ? :
-			READ_ONCE(net->ipv4.sysctl_tcp_syn_retries);
+		val = icsk->icsk_syn_retries ? : net->ipv4.sysctl_tcp_syn_retries;
 		break;
 	case TCP_LINGER2:
 		val = READ_ONCE(tp->linger2);
@@ -4003,8 +3946,6 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 			return -EFAULT;
 		lock_sock(sk);
 		err = tcp_zerocopy_receive(sk, &zc);
-		err = BPF_CGROUP_RUN_PROG_GETSOCKOPT_KERN(sk, level, optname,
-							  &zc, &len, err);
 		release_sock(sk);
 		if (len >= offsetofend(struct tcp_zerocopy_receive, err))
 			goto zerocopy_rcv_sk_err;
@@ -4038,18 +3979,6 @@ zerocopy_rcv_out:
 		return -EFAULT;
 	return 0;
 }
-
-bool tcp_bpf_bypass_getsockopt(int level, int optname)
-{
-	/* TCP do_tcp_getsockopt has optimized getsockopt implementation
-	 * to avoid extra socket lock for TCP_ZEROCOPY_RECEIVE.
-	 */
-	if (level == SOL_TCP && optname == TCP_ZEROCOPY_RECEIVE)
-		return true;
-
-	return false;
-}
-EXPORT_SYMBOL(tcp_bpf_bypass_getsockopt);
 
 int tcp_getsockopt(struct sock *sk, int level, int optname, char __user *optval,
 		   int __user *optlen)
@@ -4317,10 +4246,7 @@ void __init tcp_init(void)
 		     sizeof_field(struct sk_buff, cb));
 
 	percpu_counter_init(&tcp_sockets_allocated, 0, GFP_KERNEL);
-
-	timer_setup(&tcp_orphan_timer, tcp_orphan_update, TIMER_DEFERRABLE);
-	mod_timer(&tcp_orphan_timer, jiffies + TCP_ORPHAN_TIMER_PERIOD);
-
+	percpu_counter_init(&tcp_orphan_count, 0, GFP_KERNEL);
 	inet_hashinfo_init(&tcp_hashinfo);
 	inet_hashinfo2_init(&tcp_hashinfo, "tcp_listen_portaddr_hash",
 			    thash_entries, 21,  /* one slot per 2 MB*/

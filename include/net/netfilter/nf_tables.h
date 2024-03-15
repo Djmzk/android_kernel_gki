@@ -142,9 +142,9 @@ static inline u16 nft_reg_load16(const u32 *sreg)
 	return *(u16 *)sreg;
 }
 
-static inline void nft_reg_store64(u64 *dreg, u64 val)
+static inline void nft_reg_store64(u32 *dreg, u64 val)
 {
-	put_unaligned(val, dreg);
+	put_unaligned(val, (u64 *)dreg);
 }
 
 static inline u64 nft_reg_load64(const u32 *sreg)

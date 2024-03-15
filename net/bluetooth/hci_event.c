@@ -238,7 +238,7 @@ static void hci_cc_reset(struct hci_dev *hdev, struct sk_buff *skb)
 
 	hdev->ssp_debug_mode = 0;
 
-	hci_bdaddr_list_clear(&hdev->le_accept_list);
+	hci_bdaddr_list_clear(&hdev->le_white_list);
 	hci_bdaddr_list_clear(&hdev->le_resolv_list);
 }
 
@@ -1458,22 +1458,36 @@ static void hci_cc_le_read_num_adv_sets(struct hci_dev *hdev,
 	hdev->le_num_of_adv_sets = rp->num_of_sets;
 }
 
-static void hci_cc_le_read_accept_list_size(struct hci_dev *hdev,
-					    struct sk_buff *skb)
+static void hci_cc_le_read_white_list_size(struct hci_dev *hdev,
+					   struct sk_buff *skb)
 {
-	struct hci_rp_le_read_accept_list_size *rp = (void *)skb->data;
+	struct hci_rp_le_read_white_list_size *rp = (void *) skb->data;
 
 	BT_DBG("%s status 0x%2.2x size %u", hdev->name, rp->status, rp->size);
 
 	if (rp->status)
 		return;
 
-	hdev->le_accept_list_size = rp->size;
+	hdev->le_white_list_size = rp->size;
 }
 
-static void hci_cc_le_clear_accept_list(struct hci_dev *hdev,
+static void hci_cc_le_clear_white_list(struct hci_dev *hdev,
+				       struct sk_buff *skb)
+{
+	__u8 status = *((__u8 *) skb->data);
+
+	BT_DBG("%s status 0x%2.2x", hdev->name, status);
+
+	if (status)
+		return;
+
+	hci_bdaddr_list_clear(&hdev->le_white_list);
+}
+
+static void hci_cc_le_add_to_white_list(struct hci_dev *hdev,
 					struct sk_buff *skb)
 {
+	struct hci_cp_le_add_to_white_list *sent;
 	__u8 status = *((__u8 *) skb->data);
 
 	BT_DBG("%s status 0x%2.2x", hdev->name, status);
@@ -1481,32 +1495,18 @@ static void hci_cc_le_clear_accept_list(struct hci_dev *hdev,
 	if (status)
 		return;
 
-	hci_bdaddr_list_clear(&hdev->le_accept_list);
-}
-
-static void hci_cc_le_add_to_accept_list(struct hci_dev *hdev,
-					 struct sk_buff *skb)
-{
-	struct hci_cp_le_add_to_accept_list *sent;
-	__u8 status = *((__u8 *) skb->data);
-
-	BT_DBG("%s status 0x%2.2x", hdev->name, status);
-
-	if (status)
-		return;
-
-	sent = hci_sent_cmd_data(hdev, HCI_OP_LE_ADD_TO_ACCEPT_LIST);
+	sent = hci_sent_cmd_data(hdev, HCI_OP_LE_ADD_TO_WHITE_LIST);
 	if (!sent)
 		return;
 
-	hci_bdaddr_list_add(&hdev->le_accept_list, &sent->bdaddr,
-			    sent->bdaddr_type);
+	hci_bdaddr_list_add(&hdev->le_white_list, &sent->bdaddr,
+			   sent->bdaddr_type);
 }
 
-static void hci_cc_le_del_from_accept_list(struct hci_dev *hdev,
-					   struct sk_buff *skb)
+static void hci_cc_le_del_from_white_list(struct hci_dev *hdev,
+					  struct sk_buff *skb)
 {
-	struct hci_cp_le_del_from_accept_list *sent;
+	struct hci_cp_le_del_from_white_list *sent;
 	__u8 status = *((__u8 *) skb->data);
 
 	BT_DBG("%s status 0x%2.2x", hdev->name, status);
@@ -1514,11 +1514,11 @@ static void hci_cc_le_del_from_accept_list(struct hci_dev *hdev,
 	if (status)
 		return;
 
-	sent = hci_sent_cmd_data(hdev, HCI_OP_LE_DEL_FROM_ACCEPT_LIST);
+	sent = hci_sent_cmd_data(hdev, HCI_OP_LE_DEL_FROM_WHITE_LIST);
 	if (!sent)
 		return;
 
-	hci_bdaddr_list_del(&hdev->le_accept_list, &sent->bdaddr,
+	hci_bdaddr_list_del(&hdev->le_white_list, &sent->bdaddr,
 			    sent->bdaddr_type);
 }
 
@@ -1834,8 +1834,7 @@ static void hci_cs_inquiry(struct hci_dev *hdev, __u8 status)
 		return;
 	}
 
-	if (hci_sent_cmd_data(hdev, HCI_OP_INQUIRY))
-		set_bit(HCI_INQUIRY, &hdev->flags);
+	set_bit(HCI_INQUIRY, &hdev->flags);
 }
 
 static void hci_cs_create_conn(struct hci_dev *hdev, __u8 status)
@@ -2334,7 +2333,7 @@ static void cs_le_create_conn(struct hci_dev *hdev, bdaddr_t *peer_addr,
 	/* We don't want the connection attempt to stick around
 	 * indefinitely since LE doesn't have a page timeout concept
 	 * like BR/EDR. Set a timer for any connection that doesn't use
-	 * the accept list for connecting.
+	 * the white list for connecting.
 	 */
 	if (filter_policy == HCI_LE_USE_PEER_ADDR)
 		queue_delayed_work(conn->hdev->workqueue,
@@ -2590,7 +2589,7 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, struct sk_buff *skb)
 		 * only used during suspend.
 		 */
 		if (ev->link_type == ACL_LINK &&
-		    hci_bdaddr_list_lookup_with_flags(&hdev->accept_list,
+		    hci_bdaddr_list_lookup_with_flags(&hdev->whitelist,
 						      &ev->bdaddr,
 						      BDADDR_BREDR)) {
 			conn = hci_conn_add(hdev, ev->link_type, &ev->bdaddr,
@@ -2722,27 +2721,27 @@ static void hci_conn_request_evt(struct hci_dev *hdev, struct sk_buff *skb)
 		return;
 	}
 
-	hci_dev_lock(hdev);
-
-	if (hci_bdaddr_list_lookup(&hdev->reject_list, &ev->bdaddr,
+	if (hci_bdaddr_list_lookup(&hdev->blacklist, &ev->bdaddr,
 				   BDADDR_BREDR)) {
 		hci_reject_conn(hdev, &ev->bdaddr);
-		goto unlock;
+		return;
 	}
 
-	/* Require HCI_CONNECTABLE or an accept list entry to accept the
+	/* Require HCI_CONNECTABLE or a whitelist entry to accept the
 	 * connection. These features are only touched through mgmt so
 	 * only do the checks if HCI_MGMT is set.
 	 */
 	if (hci_dev_test_flag(hdev, HCI_MGMT) &&
 	    !hci_dev_test_flag(hdev, HCI_CONNECTABLE) &&
-	    !hci_bdaddr_list_lookup_with_flags(&hdev->accept_list, &ev->bdaddr,
+	    !hci_bdaddr_list_lookup_with_flags(&hdev->whitelist, &ev->bdaddr,
 					       BDADDR_BREDR)) {
 		hci_reject_conn(hdev, &ev->bdaddr);
-		goto unlock;
+		return;
 	}
 
 	/* Connection accepted */
+
+	hci_dev_lock(hdev);
 
 	ie = hci_inquiry_cache_lookup(hdev, &ev->bdaddr);
 	if (ie)
@@ -2755,7 +2754,8 @@ static void hci_conn_request_evt(struct hci_dev *hdev, struct sk_buff *skb)
 				    HCI_ROLE_SLAVE);
 		if (!conn) {
 			bt_dev_err(hdev, "no memory for new connection");
-			goto unlock;
+			hci_dev_unlock(hdev);
+			return;
 		}
 	}
 
@@ -2795,10 +2795,6 @@ static void hci_conn_request_evt(struct hci_dev *hdev, struct sk_buff *skb)
 		conn->state = BT_CONNECT2;
 		hci_connect_cfm(conn, 0);
 	}
-
-	return;
-unlock:
-	hci_dev_unlock(hdev);
 }
 
 static u8 hci_to_mgmt_reason(u8 err)
@@ -2924,8 +2920,14 @@ static void hci_auth_complete_evt(struct hci_dev *hdev, struct sk_buff *skb)
 
 	if (!ev->status) {
 		clear_bit(HCI_CONN_AUTH_FAILURE, &conn->flags);
-		set_bit(HCI_CONN_AUTH, &conn->flags);
-		conn->sec_level = conn->pending_sec_level;
+
+		if (!hci_conn_ssp_enabled(conn) &&
+		    test_bit(HCI_CONN_REAUTH_PEND, &conn->flags)) {
+			bt_dev_info(hdev, "re-auth of legacy device is not possible.");
+		} else {
+			set_bit(HCI_CONN_AUTH, &conn->flags);
+			conn->sec_level = conn->pending_sec_level;
+		}
 	} else {
 		if (ev->status == HCI_ERROR_PIN_OR_KEY_MISSING)
 			set_bit(HCI_CONN_AUTH_FAILURE, &conn->flags);
@@ -2934,6 +2936,7 @@ static void hci_auth_complete_evt(struct hci_dev *hdev, struct sk_buff *skb)
 	}
 
 	clear_bit(HCI_CONN_AUTH_PEND, &conn->flags);
+	clear_bit(HCI_CONN_REAUTH_PEND, &conn->flags);
 
 	if (conn->state == BT_CONFIG) {
 		if (!ev->status && hci_conn_ssp_enabled(conn)) {
@@ -3490,20 +3493,20 @@ static void hci_cmd_complete_evt(struct hci_dev *hdev, struct sk_buff *skb,
 		hci_cc_le_set_scan_enable(hdev, skb);
 		break;
 
-	case HCI_OP_LE_READ_ACCEPT_LIST_SIZE:
-		hci_cc_le_read_accept_list_size(hdev, skb);
+	case HCI_OP_LE_READ_WHITE_LIST_SIZE:
+		hci_cc_le_read_white_list_size(hdev, skb);
 		break;
 
-	case HCI_OP_LE_CLEAR_ACCEPT_LIST:
-		hci_cc_le_clear_accept_list(hdev, skb);
+	case HCI_OP_LE_CLEAR_WHITE_LIST:
+		hci_cc_le_clear_white_list(hdev, skb);
 		break;
 
-	case HCI_OP_LE_ADD_TO_ACCEPT_LIST:
-		hci_cc_le_add_to_accept_list(hdev, skb);
+	case HCI_OP_LE_ADD_TO_WHITE_LIST:
+		hci_cc_le_add_to_white_list(hdev, skb);
 		break;
 
-	case HCI_OP_LE_DEL_FROM_ACCEPT_LIST:
-		hci_cc_le_del_from_accept_list(hdev, skb);
+	case HCI_OP_LE_DEL_FROM_WHITE_LIST:
+		hci_cc_le_del_from_white_list(hdev, skb);
 		break;
 
 	case HCI_OP_LE_READ_SUPPORTED_STATES:
@@ -4612,11 +4615,8 @@ static void hci_io_capa_request_evt(struct hci_dev *hdev, struct sk_buff *skb)
 	hci_dev_lock(hdev);
 
 	conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);
-	if (!conn || !hci_dev_test_flag(hdev, HCI_SSP_ENABLED))
+	if (!conn || !hci_conn_ssp_enabled(conn))
 		goto unlock;
-
-	/* Assume remote supports SSP since it has triggered this event */
-	set_bit(HCI_CONN_SSP_ENABLED, &conn->flags);
 
 	hci_conn_hold(conn);
 
@@ -5188,7 +5188,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 
 		/* If we didn't have a hci_conn object previously
 		 * but we're in central role this must be something
-		 * initiated using an accept list. Since accept list based
+		 * initiated using a white list. Since white list based
 		 * connections are not "first class citizens" we don't
 		 * have full tracking of them. Therefore, we go ahead
 		 * with a "best effort" approach of determining the
@@ -5238,7 +5238,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 		addr_type = BDADDR_LE_RANDOM;
 
 	/* Drop the connection if the device is blocked */
-	if (hci_bdaddr_list_lookup(&hdev->reject_list, &conn->dst, addr_type)) {
+	if (hci_bdaddr_list_lookup(&hdev->blacklist, &conn->dst, addr_type)) {
 		hci_conn_drop(conn);
 		goto unlock;
 	}
@@ -5406,7 +5406,7 @@ static struct hci_conn *check_pending_le_conn(struct hci_dev *hdev,
 		return NULL;
 
 	/* Ignore if the device is blocked */
-	if (hci_bdaddr_list_lookup(&hdev->reject_list, addr, addr_type))
+	if (hci_bdaddr_list_lookup(&hdev->blacklist, addr, addr_type))
 		return NULL;
 
 	/* Most controller will fail if we try to create new connections
@@ -5925,10 +5925,6 @@ static void hci_le_remote_conn_param_req_evt(struct hci_dev *hdev,
 		return send_conn_param_neg_reply(hdev, handle,
 						 HCI_ERROR_UNKNOWN_CONN_ID);
 
-	if (max > hcon->le_conn_max_interval)
-		return send_conn_param_neg_reply(hdev, handle,
-						 HCI_ERROR_INVALID_LL_PARAMS);
-
 	if (hci_check_conn_params(min, max, latency, timeout))
 		return send_conn_param_neg_reply(hdev, handle,
 						 HCI_ERROR_INVALID_LL_PARAMS);
@@ -6146,10 +6142,10 @@ static void hci_store_wake_reason(struct hci_dev *hdev, u8 event,
 	 * keep track of the bdaddr of the connection event that woke us up.
 	 */
 	if (event == HCI_EV_CONN_REQUEST) {
-		bacpy(&hdev->wake_addr, &conn_request->bdaddr);
+		bacpy(&hdev->wake_addr, &conn_complete->bdaddr);
 		hdev->wake_addr_type = BDADDR_BREDR;
 	} else if (event == HCI_EV_CONN_COMPLETE) {
-		bacpy(&hdev->wake_addr, &conn_complete->bdaddr);
+		bacpy(&hdev->wake_addr, &conn_request->bdaddr);
 		hdev->wake_addr_type = BDADDR_BREDR;
 	} else if (event == HCI_EV_LE_META) {
 		struct hci_ev_le_meta *le_ev = (void *)skb->data;

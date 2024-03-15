@@ -39,7 +39,6 @@
 #include <linux/slab.h>
 #include <linux/ctype.h>
 #include <linux/init.h>
-#include <linux/kmemleak.h>
 #include <linux/poll.h>
 #include <linux/nmi.h>
 #include <linux/fs.h>
@@ -49,6 +48,7 @@
 #include <linux/fsnotify.h>
 #include <linux/irq_work.h>
 #include <linux/workqueue.h>
+#include <trace/hooks/ftrace_dump.h>
 
 #include "trace.h"
 #include "trace_output.h"
@@ -1893,31 +1893,17 @@ update_max_tr_single(struct trace_array *tr, struct task_struct *tsk, int cpu)
 
 	__update_max_tr(tr, tsk, cpu);
 	arch_spin_unlock(&tr->max_lock);
-
-	/* Any waiters on the old snapshot buffer need to wake up */
-	ring_buffer_wake_waiters(tr->array_buffer.buffer, RING_BUFFER_ALL_CPUS);
 }
 #endif /* CONFIG_TRACER_MAX_TRACE */
 
 static int wait_on_pipe(struct trace_iterator *iter, int full)
 {
-	int ret;
-
 	/* Iterators are static, they should be filled or empty */
 	if (trace_buffer_iter(iter, iter->cpu_file))
 		return 0;
 
-	ret = ring_buffer_wait(iter->array_buffer->buffer, iter->cpu_file, full);
-
-#ifdef CONFIG_TRACER_MAX_TRACE
-	/*
-	 * Make sure this is still the snapshot buffer, as if a snapshot were
-	 * to happen, this would now be the main buffer.
-	 */
-	if (iter->snapshot)
-		iter->array_buffer = &iter->tr->max_buffer;
-#endif
-	return ret;
+	return ring_buffer_wait(iter->array_buffer->buffer, iter->cpu_file,
+				full);
 }
 
 #ifdef CONFIG_FTRACE_STARTUP_TEST
@@ -2240,7 +2226,7 @@ struct saved_cmdlines_buffer {
 	unsigned *map_cmdline_to_pid;
 	unsigned cmdline_num;
 	int cmdline_idx;
-	char saved_cmdlines[];
+	char *saved_cmdlines;
 };
 static struct saved_cmdlines_buffer *savedcmd;
 
@@ -2254,60 +2240,47 @@ static inline void set_cmdline(int idx, const char *cmdline)
 	strncpy(get_saved_cmdlines(idx), cmdline, TASK_COMM_LEN);
 }
 
-static void free_saved_cmdlines_buffer(struct saved_cmdlines_buffer *s)
+static int allocate_cmdlines_buffer(unsigned int val,
+				    struct saved_cmdlines_buffer *s)
 {
-	int order = get_order(sizeof(*s) + s->cmdline_num * TASK_COMM_LEN);
-
-	kfree(s->map_cmdline_to_pid);
-	kmemleak_free(s);
-	free_pages((unsigned long)s, order);
-}
-
-static struct saved_cmdlines_buffer *allocate_cmdlines_buffer(unsigned int val)
-{
-	struct saved_cmdlines_buffer *s;
-	struct page *page;
-	int orig_size, size;
-	int order;
-
-	/* Figure out how much is needed to hold the given number of cmdlines */
-	orig_size = sizeof(*s) + val * TASK_COMM_LEN;
-	order = get_order(orig_size);
-	size = 1 << (order + PAGE_SHIFT);
-	page = alloc_pages(GFP_KERNEL, order);
-	if (!page)
-		return NULL;
-
-	s = page_address(page);
-	kmemleak_alloc(s, size, 1, GFP_KERNEL);
-	memset(s, 0, sizeof(*s));
-
-	/* Round up to actual allocation */
-	val = (size - sizeof(*s)) / TASK_COMM_LEN;
-	s->cmdline_num = val;
-
 	s->map_cmdline_to_pid = kmalloc_array(val,
 					      sizeof(*s->map_cmdline_to_pid),
 					      GFP_KERNEL);
-	if (!s->map_cmdline_to_pid) {
-		free_saved_cmdlines_buffer(s);
-		return NULL;
+	if (!s->map_cmdline_to_pid)
+		return -ENOMEM;
+
+	s->saved_cmdlines = kmalloc_array(TASK_COMM_LEN, val, GFP_KERNEL);
+	if (!s->saved_cmdlines) {
+		kfree(s->map_cmdline_to_pid);
+		return -ENOMEM;
 	}
 
 	s->cmdline_idx = 0;
+	s->cmdline_num = val;
 	memset(&s->map_pid_to_cmdline, NO_CMDLINE_MAP,
 	       sizeof(s->map_pid_to_cmdline));
 	memset(s->map_cmdline_to_pid, NO_CMDLINE_MAP,
 	       val * sizeof(*s->map_cmdline_to_pid));
 
-	return s;
+	return 0;
 }
 
 static int trace_create_savedcmd(void)
 {
-	savedcmd = allocate_cmdlines_buffer(SAVED_CMDLINES_DEFAULT);
+	int ret;
 
-	return savedcmd ? 0 : -ENOMEM;
+	savedcmd = kmalloc(sizeof(*savedcmd), GFP_KERNEL);
+	if (!savedcmd)
+		return -ENOMEM;
+
+	ret = allocate_cmdlines_buffer(SAVED_CMDLINES_DEFAULT, savedcmd);
+	if (ret < 0) {
+		kfree(savedcmd);
+		savedcmd = NULL;
+		return -ENOMEM;
+	}
+
+	return 0;
 }
 
 int is_tracing_stopped(void)
@@ -3568,62 +3541,6 @@ __find_next_entry(struct trace_iterator *iter, int *ent_cpu,
 	return next;
 }
 
-#define STATIC_FMT_BUF_SIZE	128
-static char static_fmt_buf[STATIC_FMT_BUF_SIZE];
-
-static char *trace_iter_expand_format(struct trace_iterator *iter)
-{
-	char *tmp;
-
-	if (iter->fmt == static_fmt_buf)
-		return NULL;
-
-	tmp = krealloc(iter->fmt, iter->fmt_size + STATIC_FMT_BUF_SIZE,
-		       GFP_KERNEL);
-	if (tmp) {
-		iter->fmt_size += STATIC_FMT_BUF_SIZE;
-		iter->fmt = tmp;
-	}
-
-	return tmp;
-}
-
-const char *trace_event_format(struct trace_iterator *iter, const char *fmt)
-{
-	const char *p, *new_fmt;
-	char *q;
-
-	if (WARN_ON_ONCE(!fmt))
-		return fmt;
-
-	p = fmt;
-	new_fmt = q = iter->fmt;
-	while (*p) {
-		if (unlikely(q - new_fmt + 3 > iter->fmt_size)) {
-			if (!trace_iter_expand_format(iter))
-				return fmt;
-
-			q += iter->fmt - new_fmt;
-			new_fmt = iter->fmt;
-		}
-
-		*q++ = *p++;
-
-		/* Replace %p with %px */
-		if (p[-1] == '%') {
-			if (p[0] == '%') {
-				*q++ = *p++;
-			} else if (p[0] == 'p' && !isalnum(p[1])) {
-				*q++ = *p++;
-				*q++ = 'x';
-			}
-		}
-	}
-	*q = '\0';
-
-	return new_fmt;
-}
-
 #define STATIC_TEMP_BUF_SIZE	128
 static char static_temp_buf[STATIC_TEMP_BUF_SIZE] __aligned(4);
 
@@ -4353,11 +4270,7 @@ static int s_show(struct seq_file *m, void *v)
 		iter->leftover = ret;
 
 	} else {
-		ret = print_trace_line(iter);
-		if (ret == TRACE_TYPE_PARTIAL_LINE) {
-			iter->seq.full = 0;
-			trace_seq_puts(&iter->seq, "[LINE TOO BIG]\n");
-		}
+		print_trace_line(iter);
 		ret = trace_print_seq(m, &iter->seq);
 		/*
 		 * If we overflow the seq_file buffer, then it will
@@ -4420,16 +4333,6 @@ __tracing_open(struct inode *inode, struct file *file, bool snapshot)
 	iter->temp = kmalloc(128, GFP_KERNEL);
 	if (iter->temp)
 		iter->temp_size = 128;
-
-	/*
-	 * trace_event_printf() may need to modify given format
-	 * string to replace %p with %px so that it shows real address
-	 * instead of hash value. However, that is only for the event
-	 * tracing, other tracer may not need. Defer the allocation
-	 * until it is needed.
-	 */
-	iter->fmt = NULL;
-	iter->fmt_size = 0;
 
 	/*
 	 * We make a copy of the current tracer to avoid concurrent
@@ -4561,20 +4464,6 @@ int tracing_open_file_tr(struct inode *inode, struct file *filp)
 	if (ret)
 		return ret;
 
-	mutex_lock(&event_mutex);
-
-	/* Fail if the file is marked for removal */
-	if (file->flags & EVENT_FILE_FL_FREED) {
-		trace_array_put(file->tr);
-		ret = -ENODEV;
-	} else {
-		event_file_get(file);
-	}
-
-	mutex_unlock(&event_mutex);
-	if (ret)
-		return ret;
-
 	filp->private_data = inode->i_private;
 
 	return 0;
@@ -4585,7 +4474,6 @@ int tracing_release_file_tr(struct inode *inode, struct file *filp)
 	struct trace_event_file *file = inode->i_private;
 
 	trace_array_put(file->tr);
-	event_file_put(file);
 
 	return 0;
 }
@@ -4624,7 +4512,6 @@ static int tracing_release(struct inode *inode, struct file *file)
 
 	mutex_destroy(&iter->mutex);
 	free_cpumask_var(iter->started);
-	kfree(iter->fmt);
 	kfree(iter->temp);
 	kfree(iter->trace);
 	kfree(iter->buffer_iter);
@@ -5617,13 +5504,25 @@ tracing_saved_cmdlines_size_read(struct file *filp, char __user *ubuf,
 	return simple_read_from_buffer(ubuf, cnt, ppos, buf, r);
 }
 
+static void free_saved_cmdlines_buffer(struct saved_cmdlines_buffer *s)
+{
+	kfree(s->saved_cmdlines);
+	kfree(s->map_cmdline_to_pid);
+	kfree(s);
+}
+
 static int tracing_resize_saved_cmdlines(unsigned int val)
 {
 	struct saved_cmdlines_buffer *s, *savedcmd_temp;
 
-	s = allocate_cmdlines_buffer(val);
+	s = kmalloc(sizeof(*s), GFP_KERNEL);
 	if (!s)
 		return -ENOMEM;
+
+	if (allocate_cmdlines_buffer(val, s) < 0) {
+		kfree(s);
+		return -ENOMEM;
+	}
 
 	preempt_disable();
 	arch_spin_lock(&trace_cmdline_lock);
@@ -6280,36 +6179,10 @@ tracing_max_lat_write(struct file *filp, const char __user *ubuf,
 
 #endif
 
-static int open_pipe_on_cpu(struct trace_array *tr, int cpu)
-{
-	if (cpu == RING_BUFFER_ALL_CPUS) {
-		if (cpumask_empty(tr->pipe_cpumask)) {
-			cpumask_setall(tr->pipe_cpumask);
-			return 0;
-		}
-	} else if (!cpumask_test_cpu(cpu, tr->pipe_cpumask)) {
-		cpumask_set_cpu(cpu, tr->pipe_cpumask);
-		return 0;
-	}
-	return -EBUSY;
-}
-
-static void close_pipe_on_cpu(struct trace_array *tr, int cpu)
-{
-	if (cpu == RING_BUFFER_ALL_CPUS) {
-		WARN_ON(!cpumask_full(tr->pipe_cpumask));
-		cpumask_clear(tr->pipe_cpumask);
-	} else {
-		WARN_ON(!cpumask_test_cpu(cpu, tr->pipe_cpumask));
-		cpumask_clear_cpu(cpu, tr->pipe_cpumask);
-	}
-}
-
 static int tracing_open_pipe(struct inode *inode, struct file *filp)
 {
 	struct trace_array *tr = inode->i_private;
 	struct trace_iterator *iter;
-	int cpu;
 	int ret;
 
 	ret = tracing_check_open_get_tr(tr);
@@ -6317,16 +6190,13 @@ static int tracing_open_pipe(struct inode *inode, struct file *filp)
 		return ret;
 
 	mutex_lock(&trace_types_lock);
-	cpu = tracing_get_cpu(inode);
-	ret = open_pipe_on_cpu(tr, cpu);
-	if (ret)
-		goto fail_pipe_on_cpu;
 
 	/* create a buffer to store the information to pass to userspace */
 	iter = kzalloc(sizeof(*iter), GFP_KERNEL);
 	if (!iter) {
 		ret = -ENOMEM;
-		goto fail_alloc_iter;
+		__trace_array_put(tr);
+		goto out;
 	}
 
 	trace_seq_init(&iter->seq);
@@ -6349,7 +6219,7 @@ static int tracing_open_pipe(struct inode *inode, struct file *filp)
 
 	iter->tr = tr;
 	iter->array_buffer = &tr->array_buffer;
-	iter->cpu_file = cpu;
+	iter->cpu_file = tracing_get_cpu(inode);
 	mutex_init(&iter->mutex);
 	filp->private_data = iter;
 
@@ -6359,15 +6229,12 @@ static int tracing_open_pipe(struct inode *inode, struct file *filp)
 	nonseekable_open(inode, filp);
 
 	tr->trace_ref++;
-
+out:
 	mutex_unlock(&trace_types_lock);
 	return ret;
 
 fail:
 	kfree(iter);
-fail_alloc_iter:
-	close_pipe_on_cpu(tr, cpu);
-fail_pipe_on_cpu:
 	__trace_array_put(tr);
 	mutex_unlock(&trace_types_lock);
 	return ret;
@@ -6384,7 +6251,7 @@ static int tracing_release_pipe(struct inode *inode, struct file *file)
 
 	if (iter->trace->pipe_close)
 		iter->trace->pipe_close(iter);
-	close_pipe_on_cpu(tr, iter->cpu_file);
+
 	mutex_unlock(&trace_types_lock);
 
 	free_cpumask_var(iter->started);
@@ -7973,7 +7840,7 @@ tracing_buffers_splice_read(struct file *file, loff_t *ppos,
 		if ((file->f_flags & O_NONBLOCK) || (flags & SPLICE_F_NONBLOCK))
 			goto out;
 
-		ret = wait_on_pipe(iter, iter->snapshot ? 0 : iter->tr->buffer_percent);
+		ret = wait_on_pipe(iter, iter->tr->buffer_percent);
 		if (ret)
 			goto out;
 
@@ -8937,9 +8804,6 @@ static struct trace_array *trace_array_create(const char *name)
 	if (!alloc_cpumask_var(&tr->tracing_cpumask, GFP_KERNEL))
 		goto out_free_tr;
 
-	if (!zalloc_cpumask_var(&tr->pipe_cpumask, GFP_KERNEL))
-		goto out_free_tr;
-
 	tr->trace_flags = global_trace.trace_flags & ~ZEROED_TRACE_FLAGS;
 
 	cpumask_copy(tr->tracing_cpumask, cpu_all_mask);
@@ -8981,7 +8845,6 @@ static struct trace_array *trace_array_create(const char *name)
  out_free_tr:
 	ftrace_free_ftrace_ops(tr);
 	free_trace_buffers(tr);
-	free_cpumask_var(tr->pipe_cpumask);
 	free_cpumask_var(tr->tracing_cpumask);
 	kfree(tr->name);
 	kfree(tr);
@@ -9083,7 +8946,6 @@ static int __remove_instance(struct trace_array *tr)
 	}
 	kfree(tr->topts);
 
-	free_cpumask_var(tr->pipe_cpumask);
 	free_cpumask_var(tr->tracing_cpumask);
 	kfree(tr->name);
 	kfree(tr);
@@ -9245,6 +9107,7 @@ init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
 	ftrace_init_tracefs(tr, d_tracer);
 }
 
+#ifndef CONFIG_TRACEFS_DISABLE_AUTOMOUNT
 static struct vfsmount *trace_automount(struct dentry *mntpt, void *ingore)
 {
 	struct vfsmount *mnt;
@@ -9266,6 +9129,7 @@ static struct vfsmount *trace_automount(struct dentry *mntpt, void *ingore)
 
 	return mnt;
 }
+#endif
 
 /**
  * tracing_init_dentry - initialize top level trace array
@@ -9290,6 +9154,7 @@ int tracing_init_dentry(void)
 	if (WARN_ON(!tracefs_initialized()))
 		return -ENODEV;
 
+#ifndef CONFIG_TRACEFS_DISABLE_AUTOMOUNT
 	/*
 	 * As there may still be users that expect the tracing
 	 * files to exist in debugfs/tracing, we must automount
@@ -9298,6 +9163,9 @@ int tracing_init_dentry(void)
 	 */
 	tr->dir = debugfs_create_automount("tracing", NULL,
 					   trace_automount, NULL);
+#else
+	tr->dir = ERR_PTR(-ENODEV);
+#endif
 
 	return 0;
 }
@@ -9437,8 +9305,17 @@ static __init int tracer_init_tracefs(void)
 static int trace_panic_handler(struct notifier_block *this,
 			       unsigned long event, void *unused)
 {
+	bool ftrace_check = false;
+
+	trace_android_vh_ftrace_oops_enter(&ftrace_check);
+
+	if (ftrace_check)
+		return NOTIFY_OK;
+
 	if (ftrace_dump_on_oops)
 		ftrace_dump(ftrace_dump_on_oops);
+
+	trace_android_vh_ftrace_oops_exit(&ftrace_check);
 	return NOTIFY_OK;
 }
 
@@ -9452,6 +9329,13 @@ static int trace_die_handler(struct notifier_block *self,
 			     unsigned long val,
 			     void *data)
 {
+	bool ftrace_check = false;
+
+	trace_android_vh_ftrace_oops_enter(&ftrace_check);
+
+	if (ftrace_check)
+		return NOTIFY_OK;
+
 	switch (val) {
 	case DIE_OOPS:
 		if (ftrace_dump_on_oops)
@@ -9460,6 +9344,8 @@ static int trace_die_handler(struct notifier_block *self,
 	default:
 		break;
 	}
+
+	trace_android_vh_ftrace_oops_exit(&ftrace_check);
 	return NOTIFY_OK;
 }
 
@@ -9484,6 +9370,8 @@ static struct notifier_block trace_die_notifier = {
 void
 trace_printk_seq(struct trace_seq *s)
 {
+	bool dump_printk = true;
+
 	/* Probably should print a warning here. */
 	if (s->seq.len >= TRACE_MAX_PRINT)
 		s->seq.len = TRACE_MAX_PRINT;
@@ -9499,7 +9387,9 @@ trace_printk_seq(struct trace_seq *s)
 	/* should be zero ended, but we are paranoid. */
 	s->buffer[s->seq.len] = 0;
 
-	printk(KERN_TRACE "%s", s->buffer);
+	trace_android_vh_ftrace_dump_buffer(s, &dump_printk);
+	if (dump_printk)
+		printk(KERN_TRACE "%s", s->buffer);
 
 	trace_seq_init(s);
 }
@@ -9521,12 +9411,6 @@ void trace_init_global_iter(struct trace_iterator *iter)
 	/* Output in nanoseconds only if we are using a clock in nanoseconds. */
 	if (trace_clocks[iter->tr->clock_id].in_ns)
 		iter->iter_flags |= TRACE_FILE_TIME_IN_NS;
-
-	/* Can not use kmalloc for iter.temp and iter.fmt */
-	iter->temp = static_temp_buf;
-	iter->temp_size = STATIC_TEMP_BUF_SIZE;
-	iter->fmt = static_fmt_buf;
-	iter->fmt_size = STATIC_FMT_BUF_SIZE;
 }
 
 void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
@@ -9538,6 +9422,8 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 	unsigned int old_userobj;
 	unsigned long flags;
 	int cnt = 0, cpu;
+	bool ftrace_check = false;
+	unsigned long size;
 
 	/* Only allow one dump user at a time. */
 	if (atomic_inc_return(&dump_running) != 1) {
@@ -9560,15 +9446,23 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 
 	/* Simulate the iterator */
 	trace_init_global_iter(&iter);
+	/* Can not use kmalloc for iter.temp */
+	iter.temp = static_temp_buf;
+	iter.temp_size = STATIC_TEMP_BUF_SIZE;
 
 	for_each_tracing_cpu(cpu) {
 		atomic_inc(&per_cpu_ptr(iter.array_buffer->data, cpu)->disabled);
+		size = ring_buffer_size(iter.array_buffer->buffer, cpu);
+		trace_android_vh_ftrace_size_check(size, &ftrace_check);
 	}
 
 	old_userobj = tr->trace_flags & TRACE_ITER_SYM_USEROBJ;
 
 	/* don't look at user memory in panic mode */
 	tr->trace_flags &= ~TRACE_ITER_SYM_USEROBJ;
+
+	if (ftrace_check)
+		goto out_enable;
 
 	switch (oops_dump_mode) {
 	case DUMP_ALL:
@@ -9600,6 +9494,7 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 	 */
 
 	while (!trace_empty(&iter)) {
+		ftrace_check = true;
 
 		if (!cnt)
 			printk(KERN_TRACE "---------------------------------\n");
@@ -9607,7 +9502,9 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 		cnt++;
 
 		trace_iterator_reset(&iter);
-		iter.iter_flags |= TRACE_FILE_LAT_FMT;
+		trace_android_vh_ftrace_format_check(&ftrace_check);
+		if (ftrace_check)
+			iter.iter_flags |= TRACE_FILE_LAT_FMT;
 
 		if (trace_find_next_entry_inc(&iter) != NULL) {
 			int ret;
@@ -9783,14 +9680,12 @@ __init static int tracer_alloc_buffers(void)
 	if (trace_create_savedcmd() < 0)
 		goto out_free_temp_buffer;
 
-	if (!zalloc_cpumask_var(&global_trace.pipe_cpumask, GFP_KERNEL))
-		goto out_free_savedcmd;
-
 	/* TODO: make the number of buffers hot pluggable with CPUS */
 	if (allocate_trace_buffers(&global_trace, ring_buf_size) < 0) {
 		MEM_FAIL(1, "tracer: failed to allocate ring buffer!\n");
-		goto out_free_pipe_cpumask;
+		goto out_free_savedcmd;
 	}
+
 	if (global_trace.buffer_disabled)
 		tracing_off();
 
@@ -9841,8 +9736,6 @@ __init static int tracer_alloc_buffers(void)
 
 	return 0;
 
-out_free_pipe_cpumask:
-	free_cpumask_var(global_trace.pipe_cpumask);
 out_free_savedcmd:
 	free_saved_cmdlines_buffer(savedcmd);
 out_free_temp_buffer:

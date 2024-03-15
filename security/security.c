@@ -35,42 +35,6 @@
 /* How many LSMs were built into the kernel? */
 #define LSM_COUNT (__end_lsm_info - __start_lsm_info)
 
-/*
- * These are descriptions of the reasons that can be passed to the
- * security_locked_down() LSM hook. Placing this array here allows
- * all security modules to use the same descriptions for auditing
- * purposes.
- */
-const char *const lockdown_reasons[LOCKDOWN_CONFIDENTIALITY_MAX+1] = {
-	[LOCKDOWN_NONE] = "none",
-	[LOCKDOWN_MODULE_SIGNATURE] = "unsigned module loading",
-	[LOCKDOWN_DEV_MEM] = "/dev/mem,kmem,port",
-	[LOCKDOWN_EFI_TEST] = "/dev/efi_test access",
-	[LOCKDOWN_KEXEC] = "kexec of unsigned images",
-	[LOCKDOWN_HIBERNATION] = "hibernation",
-	[LOCKDOWN_PCI_ACCESS] = "direct PCI access",
-	[LOCKDOWN_IOPORT] = "raw io port access",
-	[LOCKDOWN_MSR] = "raw MSR access",
-	[LOCKDOWN_ACPI_TABLES] = "modifying ACPI tables",
-	[LOCKDOWN_PCMCIA_CIS] = "direct PCMCIA CIS storage",
-	[LOCKDOWN_TIOCSSERIAL] = "reconfiguration of serial port IO",
-	[LOCKDOWN_MODULE_PARAMETERS] = "unsafe module parameters",
-	[LOCKDOWN_MMIOTRACE] = "unsafe mmio",
-	[LOCKDOWN_DEBUGFS] = "debugfs access",
-	[LOCKDOWN_XMON_WR] = "xmon write access",
-	[LOCKDOWN_BPF_WRITE_USER] = "use of bpf to write user RAM",
-	[LOCKDOWN_DBG_WRITE_KERNEL] = "use of kgdb/kdb to write kernel RAM",
-	[LOCKDOWN_INTEGRITY_MAX] = "integrity",
-	[LOCKDOWN_KCORE] = "/proc/kcore access",
-	[LOCKDOWN_KPROBES] = "use of kprobes",
-	[LOCKDOWN_BPF_READ] = "use of bpf to read kernel RAM",
-	[LOCKDOWN_DBG_READ_KERNEL] = "use of kgdb/kdb to read kernel RAM",
-	[LOCKDOWN_PERF] = "unsafe use of perf",
-	[LOCKDOWN_TRACEFS] = "use of tracefs",
-	[LOCKDOWN_XMON_RW] = "xmon read and write access",
-	[LOCKDOWN_CONFIDENTIALITY_MAX] = "confidentiality",
-};
-
 struct security_hook_heads security_hook_heads __lsm_ro_after_init;
 static BLOCKING_NOTIFIER_HEAD(blocking_lsm_notifier_chain);
 
@@ -1074,6 +1038,14 @@ out:
 }
 EXPORT_SYMBOL(security_inode_init_security);
 
+int security_inode_init_security_anon(struct inode *inode,
+				      const struct qstr *name,
+				      const struct inode *context_inode)
+{
+	return call_int_hook(inode_init_security_anon, 0, inode, name,
+			     context_inode);
+}
+
 int security_old_inode_init_security(struct inode *inode, struct inode *dir,
 				     const struct qstr *qstr, const char **name,
 				     void **value, size_t *len)
@@ -1497,24 +1469,6 @@ int security_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return call_int_hook(file_ioctl, 0, file, cmd, arg);
 }
 EXPORT_SYMBOL_GPL(security_file_ioctl);
-
-/**
- * security_file_ioctl_compat() - Check if an ioctl is allowed in compat mode
- * @file: associated file
- * @cmd: ioctl cmd
- * @arg: ioctl arguments
- *
- * Compat version of security_file_ioctl() that correctly handles 32-bit
- * processes running on 64-bit kernels.
- *
- * Return: Returns 0 if permission is granted.
- */
-int security_file_ioctl_compat(struct file *file, unsigned int cmd,
-			       unsigned long arg)
-{
-	return call_int_hook(file_ioctl_compat, 0, file, cmd, arg);
-}
-EXPORT_SYMBOL_GPL(security_file_ioctl_compat);
 
 static inline unsigned long mmap_prot(struct file *file, unsigned long prot)
 {
@@ -2098,19 +2052,7 @@ EXPORT_SYMBOL(security_inode_setsecctx);
 
 int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
 {
-	struct security_hook_list *hp;
-	int rc;
-
-	/*
-	 * Only one module will provide a security context.
-	 */
-	hlist_for_each_entry(hp, &security_hook_heads.inode_getsecctx, list) {
-		rc = hp->hook.inode_getsecctx(inode, ctx, ctxlen);
-		if (rc != LSM_RET_DEFAULT(inode_getsecctx))
-			return rc;
-	}
-
-	return LSM_RET_DEFAULT(inode_getsecctx);
+	return call_int_hook(inode_getsecctx, -EOPNOTSUPP, inode, ctx, ctxlen);
 }
 EXPORT_SYMBOL(security_inode_getsecctx);
 

@@ -314,7 +314,8 @@ static const struct dentry_operations sockfs_dentry_operations = {
 
 static int sockfs_xattr_get(const struct xattr_handler *handler,
 			    struct dentry *dentry, struct inode *inode,
-			    const char *suffix, void *value, size_t size)
+			    const char *suffix, void *value, size_t size,
+			    int flags)
 {
 	if (value) {
 		if (dentry->d_name.len + 1 > size)
@@ -675,7 +676,6 @@ int sock_sendmsg(struct socket *sock, struct msghdr *msg)
 {
 	struct sockaddr_storage *save_addr = (struct sockaddr_storage *)msg->msg_name;
 	struct sockaddr_storage address;
-	int save_len = msg->msg_namelen;
 	int ret;
 
 	if (msg->msg_name) {
@@ -685,7 +685,6 @@ int sock_sendmsg(struct socket *sock, struct msghdr *msg)
 
 	ret = __sock_sendmsg(sock, msg);
 	msg->msg_name = save_addr;
-	msg->msg_namelen = save_len;
 
 	return ret;
 }
@@ -2155,9 +2154,6 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 {
 	return __sys_setsockopt(fd, level, optname, optval, optlen);
 }
-
-INDIRECT_CALLABLE_DECLARE(bool tcp_bpf_bypass_getsockopt(int level,
-							 int optname));
 
 /*
  *	Get a socket option. Because we don't know the option lengths we have

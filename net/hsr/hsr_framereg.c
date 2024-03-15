@@ -327,12 +327,9 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 	node_real->addr_B_port = port_rcv->type;
 
 	spin_lock_bh(&hsr->list_lock);
-	if (!node_curr->removed) {
-		list_del_rcu(&node_curr->mac_list);
-		node_curr->removed = true;
-		kfree_rcu(node_curr, rcu_head);
-	}
+	list_del_rcu(&node_curr->mac_list);
 	spin_unlock_bh(&hsr->list_lock);
+	kfree_rcu(node_curr, rcu_head);
 
 done:
 	/* PRP uses v0 header */
@@ -509,12 +506,9 @@ void hsr_prune_nodes(struct timer_list *t)
 		if (time_is_before_jiffies(timestamp +
 				msecs_to_jiffies(HSR_NODE_FORGET_TIME))) {
 			hsr_nl_nodedown(hsr, node->macaddress_A);
-			if (!node->removed) {
-				list_del_rcu(&node->mac_list);
-				node->removed = true;
-				/* Note that we need to free this entry later: */
-				kfree_rcu(node, rcu_head);
-			}
+			list_del_rcu(&node->mac_list);
+			/* Note that we need to free this entry later: */
+			kfree_rcu(node, rcu_head);
 		}
 	}
 	spin_unlock_bh(&hsr->list_lock);

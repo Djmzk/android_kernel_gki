@@ -14,6 +14,7 @@
 #include <linux/scatterlist.h>
 #include <linux/gpio/consumer.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/android_kabi.h>
 
 struct dma_chan;
 struct property_entry;
@@ -171,7 +172,6 @@ struct spi_device {
 #define	SPI_MODE_1	(0|SPI_CPHA)
 #define	SPI_MODE_2	(SPI_CPOL|0)
 #define	SPI_MODE_3	(SPI_CPOL|SPI_CPHA)
-#define	SPI_MODE_X_MASK	(SPI_CPOL|SPI_CPHA)
 #define	SPI_CS_HIGH	0x04			/* chipselect active high? */
 #define	SPI_LSB_FIRST	0x08			/* per-word bits-on-wire */
 #define	SPI_3WIRE	0x10			/* SI/SO signals shared */
@@ -197,6 +197,9 @@ struct spi_device {
 
 	/* the statistics */
 	struct spi_statistics	statistics;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 
 	/*
 	 * likely need more hooks for more protocol options affecting how
@@ -282,6 +285,8 @@ struct spi_driver {
 	int			(*remove)(struct spi_device *spi);
 	void			(*shutdown)(struct spi_device *spi);
 	struct device_driver	driver;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 static inline struct spi_driver *to_spi_driver(struct device_driver *drv)
@@ -512,9 +517,6 @@ struct spi_controller {
 
 #define SPI_MASTER_GPIO_SS		BIT(5)	/* GPIO CS must select slave */
 
-	/* flag indicating this is a non-devres managed controller */
-	bool			devm_allocated;
-
 	/* flag indicating this is an SPI slave controller */
 	bool			slave;
 
@@ -647,8 +649,15 @@ struct spi_controller {
 	int			*cs_gpios;
 	struct gpio_desc	**cs_gpiods;
 	bool			use_gpio_descriptors;
+// KABI fix up for 35f3f8504c3b ("spi: Switch to signed types for *_native_cs
+// SPI controller fields") that showed up in 5.10.63
+#ifdef __GENKSYMS__
+	u8			unused_native_cs;
+	u8			max_native_cs;
+#else
 	s8			unused_native_cs;
 	s8			max_native_cs;
+#endif
 
 	/* statistics */
 	struct spi_statistics	statistics;
@@ -671,6 +680,9 @@ struct spi_controller {
 
 	/* Interrupt enable state during PTP system timestamping */
 	unsigned long		irq_flags;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 static inline void *spi_controller_get_devdata(struct spi_controller *ctlr)
@@ -968,6 +980,8 @@ struct spi_transfer {
 
 #define SPI_TRANS_FAIL_NO_START	BIT(0)
 	u16		error;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -1034,6 +1048,8 @@ struct spi_message {
 
 	/* list of spi_res reources when the spi message is processed */
 	struct list_head        resources;
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 static inline void spi_message_init_no_memset(struct spi_message *m)
@@ -1471,6 +1487,8 @@ struct spi_board_info {
 	 * where the default of SPI_CS_HIGH = 0 is wrong.
 	 */
 	u32		mode;
+
+	ANDROID_KABI_RESERVE(1);
 
 	/* ... may need additional spi_device chip config data here.
 	 * avoid stuff protocol drivers can set; but include stuff
