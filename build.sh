@@ -1,10 +1,10 @@
 #!/bin/bash
-# Afaneh menu V2.0
 
 # Variables
-DIR=`readlink -f .`
-PARENT_DIR=`readlink -f ${DIR}/..`
+DIR=$(readlink -f .)
+PARENT_DIR=$(readlink -f ${DIR}/..)
 
+# Set environment variables
 export CROSS_COMPILE=$PARENT_DIR/tc/zyc-19/bin/aarch64-linux-gnu-
 export CC=$PARENT_DIR/tc/zyc-19/bin/clang
 export PLATFORM_VERSION=14
@@ -18,23 +18,26 @@ export ARCH=arm64
 KERNEL_MAKE_ENV="LOCALVERSION=-MoonStone"
 
 # Color
-ON_BLUE=`echo -e "\033[44m"`	# On Blue
-RED=`echo -e "\033[1;31m"`	# Red
-BLUE=`echo -e "\033[1;34m"`	# Blue
-GREEN=`echo -e "\033[1;32m"`	# Green
-Under_Line=`echo -e "\e[4m"`	# Text Under Line
-STD=`echo -e "\033[0m"`		# Text Clear
- 
+ON_BLUE=$(echo -e "\033[44m")    # On Blue
+RED=$(echo -e "\033[1;31m")    # Red
+BLUE=$(echo -e "\033[1;34m")    # Blue
+GREEN=$(echo -e "\033[1;32m")    # Green
+Under_Line=$(echo -e "\e[4m")    # Text Under Line
+STD=$(echo -e "\033[0m")        # Text Clear
+
 # Functions
 pause(){
   read -p "${RED}$2${STD}Press ${BLUE}[Enter]${STD} key to $1..." fackEnterKey
 }
 
 clang(){
-  if [ ! -d $PARENT_DIR/tc/clang-r487747c ]; then
-    pause 'clone Android Clang/LLVM Prebuilts'
-    git clone https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r487747c $PARENT_DIR/tc/clang-r487747c
-    . $DIR/build_menu
+  if [ ! -d $PARENT_DIR/tc/zyc-19 ]; then
+    pause 'download and extract Clang 19.0.0git-20240315'
+    mkdir -p $PARENT_DIR/tc/zyc-19
+    cd $PARENT_DIR/tc/zyc-19
+    wget https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240315-release/Clang-19.0.0git-20240315.tar.gz
+    tar -xf Clang-19.0.0git-20240315.tar.gz
+    cd $DIR
   fi
 }
 
@@ -151,9 +154,7 @@ read_options(){
   esac
 }
 
-# Trap CTRL+C, CTRL+Z and quit singles
- 
-# Step # Main logic - infinite loop
+# Main logic - infinite loop
 while true
 do
   show_menus
