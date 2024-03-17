@@ -12,7 +12,6 @@ export ANDROID_MAJOR_VERSION=s
 export PATH=$PARENT_DIR/tc/zyc-19/bin:$PATH
 export PATH=$PARENT_DIR/tc/build-tools/path/linux-x86:$PATH
 export PATH=$PARENT_DIR/tc/gas/linux-x86:$PATH
-export TARGET_SOC=s5e9925
 export LLVM=1 LLVM_IAS=1
 export ARCH=arm64
 KERNEL_MAKE_ENV="LOCALVERSION=-MoonStone-v1.0"
