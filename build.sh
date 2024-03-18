@@ -1,15 +1,16 @@
 #!/bin/bash
+sudo apt-get install flex -y
 
 # Variables
 DIR=$(readlink -f .)
 PARENT_DIR=$(readlink -f ${DIR}/..)
 
 # Set environment variables
-export CROSS_COMPILE=$PARENT_DIR/tc/zyc-19/bin/aarch64-linux-gnu-
-export CC=$PARENT_DIR/tc/zyc-19/bin/clang
+export CROSS_COMPILE=$PARENT_DIR/tc/clang-proton/bin/aarch64-linux-gnu-
+export CC=$PARENT_DIR/tc/clang-proton/bin/clang
 export PLATFORM_VERSION=14
 export ANDROID_MAJOR_VERSION=s
-export PATH=$PARENT_DIR/tc/zyc-19/bin:$PATH
+export PATH=$PARENT_DIR/tc/clang-proton/bin:$PATH
 export PATH=$PARENT_DIR/tc/build-tools/path/linux-x86:$PATH
 export PATH=$PARENT_DIR/tc/gas/linux-x86:$PATH
 export LLVM=1 LLVM_IAS=1
