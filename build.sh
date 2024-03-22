@@ -59,7 +59,7 @@ build_tools(){
 
 variant(){
   findconfig=""
-  findconfig=($(ls arch/arm64/configs/gki_defconfig))
+  findconfig=($(ls arch/arm64/configs/marble_defconfig))
   declare -i i=1
   shift 2
   for e in "${findconfig[@]}"; do
@@ -93,7 +93,7 @@ build_kernel(){
   variant
   echo "${GREEN}***** Compiling kernel *****${STD}"
   [ ! -d "out" ] && mkdir out
-  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV gki_defconfig
+  make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV marble_defconfig
   make -j$(nproc) -C $(pwd) $KERNEL_MAKE_ENV
 
   [ -e arch/arm64/boot/Image.gz ] && cp arch/arm64/boot/Image.gz $(pwd)/out/Image.gz
